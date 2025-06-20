@@ -2,6 +2,7 @@ import fitz
 from ollama import embed
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from io import BytesIO
+import streamlit as st
 
 def extract_text_from_pdf(file):
     file_bytes = file.read()
@@ -15,6 +16,13 @@ def extract_text_from_pdf(file):
         for page in doc:
             text += page.get_text()
     return text
+
+def show_chat_history(chat_history):
+    for message in chat_history:
+        if message["role"] == "user":
+            st.chat_message("user").write(message["content"])
+        elif message["role"] == "assistant":
+            st.chat_message("assistant").write(message["content"])
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
     def __call__(self, input: Documents) -> Embeddings:
