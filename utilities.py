@@ -1,5 +1,5 @@
 import fitz
-from ollama import embed
+from ollama import embed, chat
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from io import BytesIO
@@ -9,6 +9,21 @@ import re
 from sklearn.metrics.pairwise import cosine_distances
 import numpy as np
 import time
+from dotenv import load_dotenv
+import os
+from pydantic import BaseModel
+import json
+load_dotenv()
+
+embedding_model = os.getenv("EMBEDDING_MODEL")
+db_query_prompt = os.getenv("DB_QUERY_PROMPT")
+
+class SearchQueries(BaseModel):
+  search_query1: str
+  search_query2: str
+  search_query3: str
+  search_query4: str
+  search_query5: str
 
 def extract_text_from_pdf(file):
     file_bytes = file.read()
@@ -34,16 +49,17 @@ def create_chroma_client(path=None):
     chroma_client = chromadb.PersistentClient(path=path)
     return chroma_client
 
-def get_sha256_hash(text: str) -> str:
+def get_sha512_hash(text: str) -> str:
     """Why use SHA-256?
     1. Ensures uniqueness of each document ID.
     2. Avoids collisions better than simple counters.
     3. Can help deduplicate if the same document is added again (ChromaDB may skip or overwrite based on implementation)."""
-    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+    
+    return hashlib.sha512(text.encode('utf-8')).hexdigest()
 
 def generate_embeddings(sentence):
     response = embed(
-        model="bge-m3:latest",
+        model=embedding_model,
         input=sentence,
     )
 
@@ -51,10 +67,10 @@ def generate_embeddings(sentence):
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
     def __call__(self, input: Documents) -> Embeddings:
-        response = embed(model='bge-m3', input=input)
+        response = embed(model=embedding_model, input=input)
         return response['embeddings']
 
-def semantic_chunking(documents, buffer_size=2, breakpoint_percentile_threshold=80):
+def semantic_chunking(documents : list, buffer_size = 1, breakpoint_percentile_threshold = 80) -> list:
     """
     Splits a list of documents into semantically coherent chunks based on changes in semantic similarity
     between consecutive sentences.
@@ -95,7 +111,7 @@ def semantic_chunking(documents, buffer_size=2, breakpoint_percentile_threshold=
         batch_response.append(response.embeddings)
         if len(batch_response)%50 == 0:
             percent_complete = (len(batch_response) / len(sentences_indexed))
-            my_bar.progress(percent_complete, text=f"{progress_text} {percent_complete:.2f}% completed")
+            my_bar.progress(percent_complete, text=f"{progress_text} {percent_complete*100:.2f}% completed")
     # Store embeddings back into the indexed sentence structure
     for i, sentence in enumerate(sentences_indexed):
         sentences_indexed[i]['combined_sentence_embedding'] = batch_response[i][0]
@@ -132,3 +148,92 @@ def semantic_chunking(documents, buffer_size=2, breakpoint_percentile_threshold=
     my_bar.empty()
 
     return chunks
+
+def generate_db_queries(user_prompt: str, chat_history) -> list:
+    """
+    Generates a list of queries to be used for database retrieval.
+    The queries are generated based on the prompt provided by the user.
+    """
+    response = chat(
+        messages=[
+            {
+                'role': 'system',
+                'content': db_query_prompt
+            },
+            *chat_history[min(-10, -len(chat_history)):],  # Use the last 10 messages from chat history
+            {
+                'role': 'user',
+                'content': user_prompt
+            }
+        ],
+        model = 'llama3.1:8b',
+        format = SearchQueries.model_json_schema(),
+    )
+
+    queries = json.loads(response.message.content)
+    query_list = [queries[key] for key in queries.keys() if queries[key]]
+    return query_list
+
+def retrieve_documents_from_db(db, user_query: str, chat_history, n_results: int = 5) -> list:
+    """ Retrieves relevant documents from the database based on the user's query.
+    Args:
+        db: The database instance to query.
+        user_query (str): The query string provided by the user.
+        n_results (int): The number of results to return.
+    Returns:
+        list: A list of relevant documents retrieved from the database.
+    """
+    if not user_query:
+        return []
+
+    queries = generate_db_queries(user_query, chat_history)
+    relevant_docs = db.query(query_texts = queries, n_results = n_results)
+    # Step 1: Flatten the list
+    flattened = [item for sublist in relevant_docs['documents'] for item in sublist]
+
+    # Step 2: Remove duplicates while maintaining order
+    unique_items = list(dict.fromkeys(flattened))
+
+    return unique_items
+
+def generate_llm_response(user_query: str, chat_history, db) -> str:
+    """Generates a response from the language model based on the user's query and relevant documents.
+    
+    Args:
+        user_query (str): The query string provided by the user.
+        relevant_docs (list): A list of relevant documents to include in the response.
+    
+    Returns:
+        str: The generated response from the language model.
+    """
+    if not user_query:
+        return "Please provide a query to generate a response."
+    
+    query_oneline = user_query.replace("\n", " ")
+
+    relevant_docs = retrieve_documents_from_db(db, user_query, chat_history)
+    passages = ""
+    for passage in relevant_docs:
+        passages += f"PASSAGE: {passage}\n"
+    
+    if not relevant_docs:
+        return "No relevant documents found for the given query."
+    
+    user_query = f"# **PASSAGES**:\n {passages} \n\n# **USER QUERY**: " + query_oneline
+    print(user_query)
+    response = chat(
+        messages=[
+            {
+                'role': 'system',
+                'content': "You are a helpful and informative assistant, Your job is to answer questions as accurately and helpfully as possible using the provided passages (DON'T MENTION ANYTHING ABOUT PASSAGES GIVEN). Always prefer being helpful over being literal. If the passages are irrelevant, IGNORE them completely and say 'I don't know'."
+            },
+            *chat_history[min(-10, -len(chat_history)):],  # Use the last 10 messages from chat history
+            {
+                'role': 'user',
+                'content': user_query
+            }
+        ],
+        model = 'llama3.1:8b',
+    )
+
+    return response.message.content
