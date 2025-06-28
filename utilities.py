@@ -5,7 +5,7 @@ import json
 import hashlib
 import re
 from io import BytesIO
-
+import ollama
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 import fitz
@@ -19,7 +19,40 @@ from sklearn.metrics.pairwise import cosine_distances
 load_dotenv()
 
 embedding_model = os.getenv("EMBEDDING_MODEL")
-db_query_prompt = os.getenv("DB_QUERY_PROMPT")
+llm_model = os.getenv("LLM_MODEL")
+
+available_models = ollama.list().models
+available_models = [model.model for model in available_models]
+if embedding_model not in available_models:
+    with st.spinner(f"Downloading embedding model: {embedding_model}..."):
+        ollama.pull(embedding_model)
+if llm_model not in available_models:
+    with st.spinner(f"Downloading LLM model: {llm_model}..."):
+        ollama.pull(llm_model)
+
+db_query_prompt = """You are an intelligent assistant designed to help users retrieve semantically relevant information from a vector database. Given a user input, your task is to generate 5 distinct but related search queries in JSON format that capture different semantic variations or perspectives of the user's intent.
+
+These queries will be used to perform similarity search in a vector database (e.g., ChromaDB, FAISS, Weaviate) using embedding vectors. Each query should be phrased naturally and be slightly different in wording or focus, to increase the chance of matching relevant vector content.
+
+### Instructions:
+
+1. Keep each query under 30 words.
+2. Maintain the original intent, but rephrase or reframe each version.
+3. Avoid repeating phrases or structure across all 5 queries.
+
+### Example input:
+**User input:** 'How can I improve team communication in remote work settings?'
+
+### Output:
+{
+search_query1 : 'Best strategies to enhance communication among remote teams',
+search_query2 : 'Ways to foster collaboration and clarity in distributed teams',
+search_query3 : 'Tips for improving virtual teamwork and reducing miscommunication',
+search_query4 : 'Effective methods for remote team interaction and engagement',
+search_query5 : 'How to ensure clear communication in a remote work environment'
+}"""
+
+llm_response_prompt = """"You are a helpful and informative assistant, Your job is to answer questions as accurately and helpfully as possible using the provided passages (DON'T MENTION ANYTHING ABOUT PASSAGES GIVEN). Always prefer being helpful over being literal. If the passages are irrelevant, IGNORE them completely and say 'I don't know'."""
 
 class SearchQueries(BaseModel):
     """Schema used when requesting search queries from the language model."""
@@ -57,7 +90,7 @@ def show_chat_history(chat_history):
 def create_chroma_client(path: str | None = None):
     """Return a persistent ChromaDB client stored at *path*."""
 
-    chroma_client = chromadb.PersistentClient(path=path)
+    chroma_client = chromadb.Client()
     return chroma_client
 
 def get_sha512_hash(text: str) -> str:
@@ -183,7 +216,7 @@ def generate_db_queries(user_prompt: str, chat_history) -> list:
                 'content': user_prompt
             }
         ],
-        model = 'llama3.1:8b',
+        model = llm_model,
         format = SearchQueries.model_json_schema(),
     )
 
@@ -232,7 +265,7 @@ def generate_llm_response(user_query: str, chat_history, db) -> str:
         messages=[
             {
                 'role': 'system',
-                'content': "You are a helpful and informative assistant, Your job is to answer questions as accurately and helpfully as possible using the provided passages (DON'T MENTION ANYTHING ABOUT PASSAGES GIVEN). Always prefer being helpful over being literal. If the passages are irrelevant, IGNORE them completely and say 'I don't know'."
+                'content': llm_response_prompt
             },
             *chat_history[min(-10, -len(chat_history)):],  # Use the last 10 messages from chat history
             {
@@ -240,7 +273,7 @@ def generate_llm_response(user_query: str, chat_history, db) -> str:
                 'content': user_query
             }
         ],
-        model = 'llama3.1:8b',
+        model = llm_model,
     )
 
     return response.message.content

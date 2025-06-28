@@ -6,7 +6,7 @@ vector store and chat with an LLM over the uploaded documents.
 
 import os
 import uuid
-
+import shutil
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
