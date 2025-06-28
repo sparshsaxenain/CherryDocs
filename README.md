@@ -1,6 +1,6 @@
 # CherryDocs (A Private RAG System)
 
-CherryDocs is a simple document question‑answering demo built with [Streamlit](https://streamlit.io/) and [Chroma](https://www.trychroma.com/). Uploaded text‑based files are converted to chunks, embedded with an Ollama model, and stored in a temporary vector database. A user can then ask questions in the chat interface and the system will retrieve the most relevant chunks and ask an LLM to generate a response. Its primary focus is privacy — everything runs entirely on‑device without an internet connection, and all data (including chunks, vectors, and chat history) is purged when the session ends.
+CherryDocs is a simple document question‑answering demo built with [Streamlit](https://streamlit.io/) and [Chroma](https://www.trychroma.com/). Uploaded text‑based files are converted to chunks, embedded with an Ollama model, and stored in a temporary vector database. A user can then ask questions in the chat interface and the system will retrieve the most relevant chunks and ask an LLM to generate a response. Its primary focus is privacy, everything runs entirely on‑device without an internet connection, and all data (including chunks, vectors, and chat history) is purged when the session ends.
 
 ## Features
 
