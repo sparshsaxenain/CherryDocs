@@ -1,37 +1,44 @@
-import fitz
-from ollama import embed, chat
-import chromadb
-from chromadb import Documents, EmbeddingFunction, Embeddings
-from io import BytesIO
-import streamlit as st
+"""Helper utilities for the CherryDocs application."""
+
+import os
+import json
 import hashlib
 import re
-from sklearn.metrics.pairwise import cosine_distances
+from io import BytesIO
+
+import chromadb
+from chromadb import Documents, EmbeddingFunction, Embeddings
+import fitz
 import numpy as np
-import time
+import streamlit as st
 from dotenv import load_dotenv
-import os
+from ollama import embed, chat
 from pydantic import BaseModel
-import json
+from sklearn.metrics.pairwise import cosine_distances
+
 load_dotenv()
 
 embedding_model = os.getenv("EMBEDDING_MODEL")
 db_query_prompt = os.getenv("DB_QUERY_PROMPT")
 
 class SearchQueries(BaseModel):
-  search_query1: str
-  search_query2: str
-  search_query3: str
-  search_query4: str
-  search_query5: str
+    """Schema used when requesting search queries from the language model."""
+
+    search_query1: str
+    search_query2: str
+    search_query3: str
+    search_query4: str
+    search_query5: str
 
 def extract_text_from_pdf(file):
+    """Return the textual content of a PDF uploaded through Streamlit."""
+
     file_bytes = file.read()
     if not file_bytes:
         raise ValueError("Uploaded file is empty.")
-    
+
     pdf_stream = BytesIO(file_bytes)
-    
+
     text = ""
     with fitz.open(stream=pdf_stream, filetype="pdf") as doc:
         for page in doc:
@@ -39,49 +46,62 @@ def extract_text_from_pdf(file):
     return text
 
 def show_chat_history(chat_history):
+    """Render a list of chat messages in the Streamlit interface."""
+
     for message in chat_history:
         if message["role"] == "user":
             st.chat_message("user").write(message["content"])
         elif message["role"] == "assistant":
             st.chat_message("assistant").write(message["content"])
 
-def create_chroma_client(path=None):
+def create_chroma_client(path: str | None = None):
+    """Return a persistent ChromaDB client stored at *path*."""
+
     chroma_client = chromadb.PersistentClient(path=path)
     return chroma_client
 
 def get_sha512_hash(text: str) -> str:
-    """Why use SHA-256?
-    1. Ensures uniqueness of each document ID.
-    2. Avoids collisions better than simple counters.
-    3. Can help deduplicate if the same document is added again (ChromaDB may skip or overwrite based on implementation)."""
-    
-    return hashlib.sha512(text.encode('utf-8')).hexdigest()
+    """Return a SHA-512 hash of *text* used for unique document IDs."""
 
-def generate_embeddings(sentence):
-    response = embed(
-        model=embedding_model,
-        input=sentence,
-    )
+    return hashlib.sha512(text.encode("utf-8")).hexdigest()
 
+def generate_embeddings(sentence: str):
+    """Generate an embedding vector for a sentence using Ollama."""
+
+    response = embed(model=embedding_model, input=sentence)
     return response
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
+    """Adapter that allows ChromaDB to use Ollama for embeddings."""
+
     def __call__(self, input: Documents) -> Embeddings:
         response = embed(model=embedding_model, input=input)
-        return response['embeddings']
+        return response["embeddings"]
 
-def semantic_chunking(documents : list, buffer_size = 1, breakpoint_percentile_threshold = 80) -> list:
-    """
-    Splits a list of documents into semantically coherent chunks based on changes in semantic similarity
-    between consecutive sentences.
+def semantic_chunking(
+    documents: list,
+    buffer_size: int = 1,
+    breakpoint_percentile_threshold: int = 80,
+) -> list:
+    """Split documents into semantically coherent chunks.
 
-    Args:
-        documents (list): A list of full document texts (strings).
-        buffer_size (int): Number of surrounding sentences to include when computing context (default = 2).
-        breakpoint_percentile_threshold (int): Percentile threshold to decide where semantic breaks occur (default = 80).
+    Sentences are embedded and compared for semantic distance. Whenever the
+    distance crosses the configured percentile threshold a new chunk begins.
 
-    Returns:
-        list: List of chunked document strings, each containing semantically grouped sentences.
+    Parameters
+    ----------
+    documents : list[str]
+        Input documents as plain strings.
+    buffer_size : int, optional
+        Number of neighbouring sentences to include when calculating
+        embeddings. Defaults to 1.
+    breakpoint_percentile_threshold : int, optional
+        Threshold percentile used to determine chunk boundaries. Defaults to 80.
+
+    Returns
+    -------
+    list[str]
+        List of chunked document strings.
     """
 
     # Split all documents into sentences using punctuation as delimiters
@@ -150,10 +170,7 @@ def semantic_chunking(documents : list, buffer_size = 1, breakpoint_percentile_t
     return chunks
 
 def generate_db_queries(user_prompt: str, chat_history) -> list:
-    """
-    Generates a list of queries to be used for database retrieval.
-    The queries are generated based on the prompt provided by the user.
-    """
+    """Ask the LLM to produce search queries for retrieving documents."""
     response = chat(
         messages=[
             {
@@ -174,15 +191,13 @@ def generate_db_queries(user_prompt: str, chat_history) -> list:
     query_list = [queries[key] for key in queries.keys() if queries[key]]
     return query_list
 
-def retrieve_documents_from_db(db, user_query: str, chat_history, n_results: int = 5) -> list:
-    """ Retrieves relevant documents from the database based on the user's query.
-    Args:
-        db: The database instance to query.
-        user_query (str): The query string provided by the user.
-        n_results (int): The number of results to return.
-    Returns:
-        list: A list of relevant documents retrieved from the database.
-    """
+def retrieve_documents_from_db(
+    db,
+    user_query: str,
+    chat_history,
+    n_results: int = 5,
+) -> list:
+    """Return a set of documents from the vector store that match the query."""
     if not user_query:
         return []
 
@@ -197,15 +212,7 @@ def retrieve_documents_from_db(db, user_query: str, chat_history, n_results: int
     return unique_items
 
 def generate_llm_response(user_query: str, chat_history, db) -> str:
-    """Generates a response from the language model based on the user's query and relevant documents.
-    
-    Args:
-        user_query (str): The query string provided by the user.
-        relevant_docs (list): A list of relevant documents to include in the response.
-    
-    Returns:
-        str: The generated response from the language model.
-    """
+    """Generate a response from the LLM using retrieved documents as context."""
     if not user_query:
         return "Please provide a query to generate a response."
     
