@@ -10,6 +10,7 @@ import shutil
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+import time
 
 from utilities import (
     extract_text_from_pdf,
@@ -91,6 +92,7 @@ if prompt and prompt["files"]:
             st.write(f"- {file.name} ({file.type})")
 
     # Show a progress bar while the files are processed.
+    chunking_start_time = time.time()
     percent_complete = 0
     my_bar = st.progress(percent_complete, text="Processing files...")
     for file in prompt["files"]:
@@ -114,9 +116,11 @@ if prompt and prompt["files"]:
     # Break large texts into semantically meaningful chunks and store them
     # in the Chroma collection.
     chunks = semantic_chunking(documents)
+    chunking_end_time = time.time()
+    chunking_duration = chunking_end_time - chunking_start_time
     ids = [f"{get_sha512_hash(chunk)}-{uuid.uuid4()}" for chunk in chunks]
     db.add(documents=chunks, ids=ids)
-
+    st.write(f"Processed {len(documents)} files in {chunking_duration:.2f} seconds.")
     if prompt["text"]:
         st.chat_message("user").write(prompt["text"])
         st.session_state.chat_history.append({

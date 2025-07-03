@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from ollama import embed, chat
 from pydantic import BaseModel
 from sklearn.metrics.pairwise import cosine_distances
+import time
 
 load_dotenv()
 
@@ -251,7 +252,10 @@ def generate_llm_response(user_query: str, chat_history, db) -> str:
     
     query_oneline = user_query.replace("\n", " ")
 
+    retrieval_start_time = time.time()
     relevant_docs = retrieve_documents_from_db(db, user_query, chat_history)
+    retrieval_end_time = time.time()
+    retrieval_duration = retrieval_end_time - retrieval_start_time
     passages = ""
     for passage in relevant_docs:
         passages += f"PASSAGE: {passage}\n"
@@ -259,6 +263,7 @@ def generate_llm_response(user_query: str, chat_history, db) -> str:
     if not relevant_docs:
         return "No relevant documents found for the given query."
     
+    llmresponse_start_time = time.time()
     user_query = f"# **PASSAGES**:\n {passages} \n\n# **USER QUERY**: " + query_oneline
     print(user_query)
     response = chat(
@@ -275,5 +280,7 @@ def generate_llm_response(user_query: str, chat_history, db) -> str:
         ],
         model = llm_model,
     )
-
+    llmresponse_end_time = time.time()
+    llmresponse_duration = llmresponse_end_time - llmresponse_start_time
+    st.write(f"Retrieval took {retrieval_duration:.2f} seconds and LLM response generation took {llmresponse_duration:.2f} seconds.")
     return response.message.content
